@@ -15,6 +15,7 @@ extern "C" {
 #define DEFAULT_EXPECTED_AUDIO_BIT_RATE            (DOUBLE)(10 * 1024 * 1024)
 #define DEFAULT_SEQ_NUM_BUFFER_SIZE                1000
 #define DEFAULT_VALID_INDEX_BUFFER_SIZE            1000
+#define DEFAULT_PEER_FRAME_BUFFER_SIZE             (5 * 1024)
 #define SRTP_AUTH_TAG_OVERHEAD                     10
 #define MIN_ROLLING_BUFFER_DURATION_IN_SECONDS     (DOUBLE) 0.1
 #define MIN_EXPECTED_BIT_RATE                      (DOUBLE)(102.4 * 1024) // Considering 1Kib = 1024 bits
@@ -59,18 +60,28 @@ typedef struct {
 
     PKvsPeerConnection pKvsPeerConnection;
 
+    UINT32 jitterBufferSsrc;
+    PJitterBuffer pJitterBuffer;
+
     PRollingBufferConfig pRollingBufferConfig;
+
+    UINT64 onFrameCustomData;
+    RtcOnFrame onFrame;
 
     UINT64 onBandwidthEstimationCustomData;
     RtcOnBandwidthEstimation onBandwidthEstimation;
     UINT64 onPictureLossCustomData;
     RtcOnPictureLoss onPictureLoss;
 
+    PBYTE peerFrameBuffer;
+    UINT32 peerFrameBufferSize;
+
     UINT32 rtcpReportsTimerId;
 
     MUTEX statsLock;
     RtcOutboundRtpStreamStats outboundStats;
     RtcRemoteInboundRtpStreamStats remoteInboundStats;
+    RtcInboundRtpStreamStats inboundStats;
 
     BOOL twccEnabled; // whether TWCC was negotiated for this transceiver's m-line
 
@@ -105,9 +116,11 @@ typedef struct {
 #define KVS_RTP_TRANSCEIVER_UNPACK_PAYLOAD_TYPE(packed)                     ((UINT8) ((packed) >> 8))
 #define KVS_RTP_TRANSCEIVER_UNPACK_RTX_PAYLOAD_TYPE(packed)                 ((UINT8) ((packed) & 0xFF))
 
-STATUS createKvsRtpTransceiver(RTC_RTP_TRANSCEIVER_DIRECTION, PKvsPeerConnection, UINT32, UINT32, PRtcMediaStreamTrack, RTC_CODEC,
+STATUS createKvsRtpTransceiver(RTC_RTP_TRANSCEIVER_DIRECTION, PKvsPeerConnection, UINT32, UINT32, PRtcMediaStreamTrack, PJitterBuffer, RTC_CODEC,
                                PKvsRtpTransceiver*);
 STATUS freeKvsRtpTransceiver(PKvsRtpTransceiver*);
+
+STATUS kvsRtpTransceiverSetJitterBuffer(PKvsRtpTransceiver, PJitterBuffer);
 
 #define CONVERT_TIMESTAMP_TO_RTP(clockRate, pts) ((UINT64) ((DOUBLE) (pts) * ((DOUBLE) (clockRate) / HUNDREDS_OF_NANOS_IN_A_SECOND)))
 

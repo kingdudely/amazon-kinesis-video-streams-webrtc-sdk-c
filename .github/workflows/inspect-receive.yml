@@ -1,0 +1,26 @@
+name: Inspect receive-side code
+
+on:
+  push:
+    branches: [minimal-publisher]
+
+permissions:
+  contents: read
+
+jobs:
+  inspect:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Find receive-side references
+        run: |
+          echo '=== JITTER ==='
+          git grep -n -E 'JitterBuffer|jitterBuffer|pJitterBuffer' -- src || true
+          echo '=== DEPAYLOADERS ==='
+          git grep -n -E 'depay|Depay' -- src/source/Rtp src/source/PeerConnection || true
+          echo '=== INBOUND STATS ==='
+          git grep -n -E 'RtcInboundRtpStreamStats|inboundStats|onFrameReadyFunc|onFrameDroppedFunc' -- src || true
+          echo '=== RTP RECEIVE ==='
+          git grep -n -E 'sendPacketToRtpReceiver|decryptSrtpPacket|onRtcpPacket' -- src/source/PeerConnection || true
+          echo '=== CODEC SOURCES ==='
+          find src/source/Rtp/Codecs -maxdepth 1 -type f -print | sort

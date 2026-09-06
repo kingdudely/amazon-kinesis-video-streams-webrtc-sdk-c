@@ -1,123 +1,24 @@
-#define LOG_CLASS "RtpVP8Payloader"
-
 #include "../../Include_i.h"
 
-STATUS createPayloadForVP8(UINT32 mtu, PBYTE pData, UINT32 dataLen, PBYTE payloadBuffer, PUINT32 pPayloadLength, PUINT32 pPayloadSubLength,
-                           PUINT32 pPayloadSubLenSize)
+STATUS createPayloadForVP8(UINT32 mtu, PBYTE frameData, UINT32 frameSize, PBYTE payloadBuffer, PUINT32 payloadLength, PUINT32 payloadSubLength,
+                           PUINT32 payloadSubLenSize)
 {
-    ENTERS();
-    STATUS retStatus = STATUS_SUCCESS;
-    BOOL sizeCalculationOnly = (payloadBuffer == NULL);
-    PayloadArray payloadArray;
-    UINT32 payloadRemaining = dataLen, payloadLenConsumed = 0;
-    PBYTE currentData = pData;
-
-    MEMSET(&payloadArray, 0, SIZEOF(payloadArray));
-
-    CHK(pData != NULL && pPayloadSubLenSize != NULL && pPayloadLength != NULL && (sizeCalculationOnly || pPayloadSubLength != NULL), STATUS_NULL_ARG);
-
-    payloadArray.payloadBuffer = payloadBuffer;
-
-    while (payloadRemaining > 0) {
-        payloadLenConsumed = MIN(mtu - VP8_PAYLOAD_DESCRIPTOR_SIZE, payloadRemaining);
-        payloadArray.payloadLength += (payloadLenConsumed + VP8_PAYLOAD_DESCRIPTOR_SIZE);
-
-        if (!sizeCalculationOnly) {
-            *payloadArray.payloadBuffer = payloadArray.payloadSubLenSize == 0 ? VP8_PAYLOAD_DESCRIPTOR_START_OF_PARTITION_VALUE : 0;
-            payloadArray.payloadBuffer++;
-
-            MEMCPY(payloadArray.payloadBuffer, currentData, payloadLenConsumed);
-
-            pPayloadSubLength[payloadArray.payloadSubLenSize] = (payloadLenConsumed + VP8_PAYLOAD_DESCRIPTOR_SIZE);
-            payloadArray.payloadBuffer += payloadLenConsumed;
-            currentData += payloadLenConsumed;
-        }
-
-        payloadArray.payloadSubLenSize++;
-        payloadRemaining -= payloadLenConsumed;
-    }
-
-CleanUp:
-    if (STATUS_FAILED(retStatus) && sizeCalculationOnly) {
-        payloadArray.payloadLength = 0;
-        payloadArray.payloadSubLenSize = 0;
-    }
-
-    if (pPayloadSubLenSize != NULL && pPayloadLength != NULL) {
-        *pPayloadLength = payloadArray.payloadLength;
-        *pPayloadSubLenSize = payloadArray.payloadSubLenSize;
-    }
-
-    LEAVES();
-    return retStatus;
+    UNUSED_PARAM(mtu);
+    UNUSED_PARAM(frameData);
+    UNUSED_PARAM(frameSize);
+    UNUSED_PARAM(payloadBuffer);
+    UNUSED_PARAM(payloadLength);
+    UNUSED_PARAM(payloadSubLength);
+    UNUSED_PARAM(payloadSubLenSize);
+    return STATUS_NOT_IMPLEMENTED;
 }
 
-STATUS depayVP8FromRtpPayload(PBYTE pRawPacket, UINT32 packetLength, PBYTE pVp8Data, PUINT32 pVp8Length, PBOOL pIsStart)
+STATUS depayVP8FromRtpPayload(PBYTE payload, UINT32 payloadLength, PBYTE frameBuffer, PUINT32 frameLength, PBOOL isStart)
 {
-    ENTERS();
-    STATUS retStatus = STATUS_SUCCESS;
-    UINT32 vp8Length = packetLength, payloadDescriptorLength = 0;
-    BOOL sizeCalculationOnly = (pVp8Data == NULL);
-    BOOL haveExtendedControlBits = FALSE;
-    BOOL havePictureID = FALSE;
-    BOOL haveTL0PICIDX = FALSE;
-    BOOL haveTID = FALSE;
-    BOOL haveKEYIDX = FALSE;
-
-    CHK(pRawPacket != NULL && pVp8Length != NULL, STATUS_NULL_ARG);
-    CHK(packetLength > 0, retStatus);
-
-    haveExtendedControlBits = (pRawPacket[payloadDescriptorLength] & 0x80) >> 7;
-    payloadDescriptorLength++;
-
-    if (haveExtendedControlBits) {
-        CHK(payloadDescriptorLength < packetLength, STATUS_RTP_INPUT_PACKET_TOO_SMALL);
-        havePictureID = (pRawPacket[payloadDescriptorLength] & 0x80) >> 7;
-        haveTL0PICIDX = (pRawPacket[payloadDescriptorLength] & 0x40) >> 6;
-        haveTID = (pRawPacket[payloadDescriptorLength] & 0x20) >> 5;
-        haveKEYIDX = (pRawPacket[payloadDescriptorLength] & 0x10) >> 4;
-        payloadDescriptorLength++;
-    }
-
-    if (havePictureID) {
-        CHK(payloadDescriptorLength < packetLength, STATUS_RTP_INPUT_PACKET_TOO_SMALL);
-        if ((pRawPacket[payloadDescriptorLength] & 0x80) > 0) { // PID is 16bit
-            payloadDescriptorLength += 2;
-        } else {
-            payloadDescriptorLength++;
-        }
-    }
-
-    if (haveTL0PICIDX == 1) {
-        CHK(payloadDescriptorLength < packetLength, STATUS_RTP_INPUT_PACKET_TOO_SMALL);
-        payloadDescriptorLength++;
-    }
-
-    if (haveTID || haveKEYIDX == 1) {
-        CHK(payloadDescriptorLength < packetLength, STATUS_RTP_INPUT_PACKET_TOO_SMALL);
-        payloadDescriptorLength++;
-    }
-
-    CHK(payloadDescriptorLength <= packetLength, STATUS_RTP_INPUT_PACKET_TOO_SMALL);
-    vp8Length -= payloadDescriptorLength;
-    CHK(!sizeCalculationOnly, retStatus);
-
-    CHK(vp8Length <= *pVp8Length, STATUS_BUFFER_TOO_SMALL);
-    MEMCPY(pVp8Data, pRawPacket + payloadDescriptorLength, vp8Length);
-
-CleanUp:
-    if (STATUS_FAILED(retStatus) && sizeCalculationOnly) {
-        vp8Length = 0;
-    }
-
-    if (pVp8Length != NULL) {
-        *pVp8Length = vp8Length;
-    }
-
-    if (pIsStart != NULL) {
-        *pIsStart = TRUE;
-    }
-
-    LEAVES();
-    return retStatus;
+    UNUSED_PARAM(payload);
+    UNUSED_PARAM(payloadLength);
+    UNUSED_PARAM(frameBuffer);
+    UNUSED_PARAM(frameLength);
+    UNUSED_PARAM(isStart);
+    return STATUS_NOT_IMPLEMENTED;
 }

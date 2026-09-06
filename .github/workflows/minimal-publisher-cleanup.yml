@@ -1,0 +1,112 @@
+name: minimal-publisher-cleanup
+
+on:
+  push:
+    branches: [minimal-publisher]
+
+permissions:
+  contents: write
+
+jobs:
+  cleanup:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: minimal-publisher
+          fetch-depth: 0
+      - name: Strip receive media path
+        shell: python
+        run: |
+          import re, pathlib
+
+          def replace_func(text, name, replacement, next_name=None):
+              pat = rf'(?ms)^STATUS {name}\(.*?^\}}\n'
+              if next_name:
+                  pat = rf'(?ms)^STATUS {name}\(.*?(?=^STATUS {next_name}\()'
+              text2, n = re.subn(pat, replacement, text, count=1)
+              if n != 1:
+                  raise SystemExit(f'could not replace {name}: {n}')
+              return text2
+
+          rtp = pathlib.Path('src/source/PeerConnection/Rtp.c')
+          s = rtp.read_text()
+          s = s.replace('PRtcMediaStreamTrack pRtcMediaStreamTrack, PJitterBuffer pJitterBuffer, RTC_CODEC rtcCodec,',
+                        'PRtcMediaStreamTrack pRtcMediaStreamTrack, RTC_CODEC rtcCodec,')
+          s = s.replace('    pKvsRtpTransceiver->pJitterBuffer = pJitterBuffer;\n', '')
+          s = re.sub(r'\n    if \(pKvsRtpTransceiver->pJitterBuffer != NULL\) \{\n        freeJitterBuffer\(&pKvsRtpTransceiver->pJitterBuffer\);\n    \}\n', '\n', s, count=1)
+          s = re.sub(r'(?ms)^STATUS kvsRtpTransceiverSetJitterBuffer\(.*?^\}\n\n', '', s, count=1)
+          s = re.sub(r'(?ms)^STATUS transceiverOnFrame\(.*?^\}\n\n', '', s, count=1)
+          s = re.sub(r'\n    pKvsRtpTransceiver->peerFrameBufferSize = DEFAULT_PEER_FRAME_BUFFER_SIZE;\n    pKvsRtpTransceiver->peerFrameBuffer = \(PBYTE\) MEMALLOC\(pKvsRtpTransceiver->peerFrameBufferSize\);\n    CHK\(pKvsRtpTransceiver->peerFrameBuffer != NULL, STATUS_NOT_ENOUGH_MEMORY\);\n', '\n', s, count=1)
+          s = re.sub(r'\n    SAFE_MEMFREE\(pKvsRtpTransceiver->peerFrameBuffer\);', '', s, count=1)
+          # Only H264 and Opus packetizers remain.
+          s = re.sub(r'\n        case RTC_CODEC_H265:\n            rtpPayloadFunc = createPayloadForH265;\n            break;', '', s, count=1)
+          s = re.sub(r'\n        case RTC_CODEC_VP8:\n            rtpPayloadFunc = createPayloadForVP8;\n            break;', '', s, count=1)
+          s = re.sub(r'\n        case RTC_CODEC_MULAW:\n        case RTC_CODEC_ALAW:\n            rtpPayloadFunc = createPayloadForG711;\n            break;', '', s, count=1)
+          # Sender reports use the sender codec clock rate, not the receiver jitter buffer.
+          s = s.replace('    UINT32 packetCount, octetCount, packetLen, allocSize, ssrc;\n',
+                        '    UINT32 packetCount, octetCount, packetLen, allocSize, ssrc, clockRate;\n', 1)
+          s = s.replace('    CHK(pKvsRtpTransceiver != NULL && pKvsRtpTransceiver->pJitterBuffer != NULL && pKvsRtpTransceiver->pKvsPeerConnection != NULL, STATUS_NULL_ARG);',
+                        '    CHK(pKvsRtpTransceiver != NULL && pKvsRtpTransceiver->pKvsPeerConnection != NULL, STATUS_NULL_ARG);', 1)
+          s = s.replace('        rtpTime = pKvsRtpTransceiver->sender.rtpTimeOffset +\n            CONVERT_TIMESTAMP_TO_RTP(pKvsRtpTransceiver->pJitterBuffer->clockRate, currentTime - pKvsRtpTransceiver->sender.firstFrameWallClockTime);',
+                        '        clockRate = pKvsRtpTransceiver->sender.track.codec == RTC_CODEC_OPUS ? OPUS_CLOCKRATE : VIDEO_CLOCKRATE;\n        rtpTime = pKvsRtpTransceiver->sender.rtpTimeOffset +\n            CONVERT_TIMESTAMP_TO_RTP(clockRate, currentTime - pKvsRtpTransceiver->sender.firstFrameWallClockTime);', 1)
+          rtp.write_text(s)
+
+          pc = pathlib.Path('src/source/PeerConnection/PeerConnection.c')
+          s = pc.read_text()
+          start = s.index('STATUS addTransceiver(')
+          end = s.index('STATUS addSupportedCodec(', start)
+          new = '''STATUS addTransceiver(PRtcPeerConnection pPeerConnection, PRtcMediaStreamTrack pRtcMediaStreamTrack, PRtcRtpTransceiverInit pRtcRtpTransceiverInit,\n                      PRtcRtpTransceiver* ppRtcRtpTransceiver)\n{\n    UNUSED_PARAM(pRtcRtpTransceiverInit);\n    STATUS retStatus = STATUS_SUCCESS;\n    PKvsRtpTransceiver pKvsRtpTransceiver = NULL;\n    PKvsPeerConnection pKvsPeerConnection = (PKvsPeerConnection) pPeerConnection;\n    UINT32 ssrc = (UINT32) RAND(), rtxSsrc = (UINT32) RAND();\n    RTC_RTP_TRANSCEIVER_DIRECTION direction = RTC_RTP_TRANSCEIVER_DIRECTION_SENDONLY;\n\n    CHK(pKvsPeerConnection != NULL && pRtcMediaStreamTrack != NULL && ppRtcRtpTransceiver != NULL, STATUS_NULL_ARG);\n    CHK(pRtcMediaStreamTrack->codec == RTC_CODEC_H264_PROFILE_42E01F_LEVEL_ASYMMETRY_ALLOWED_PACKETIZATION_MODE ||\n            pRtcMediaStreamTrack->codec == RTC_CODEC_OPUS,\n        STATUS_NOT_IMPLEMENTED);\n\n    CHK_STATUS(createKvsRtpTransceiver(direction, pKvsPeerConnection, ssrc, rtxSsrc, pRtcMediaStreamTrack, pRtcMediaStreamTrack->codec,\n                                       &pKvsRtpTransceiver));\n    CHK_STATUS(doubleListInsertItemHead(pKvsPeerConnection->pTransceivers, (UINT64) pKvsRtpTransceiver));\n    *ppRtcRtpTransceiver = (PRtcRtpTransceiver) pKvsRtpTransceiver;\n\n    CHK_STATUS(timerQueueAddTimer(pKvsPeerConnection->timerQueueHandle, RTCP_FIRST_REPORT_DELAY, TIMER_QUEUE_SINGLE_INVOCATION_PERIOD,\n                                  rtcpReportsCallback, (UINT64) pKvsRtpTransceiver, &pKvsRtpTransceiver->rtcpReportsTimerId));\n    pKvsRtpTransceiver = NULL;\n\nCleanUp:\n    if (pKvsRtpTransceiver != NULL) {\n        CHK_LOG_ERR(freeKvsRtpTransceiver(&pKvsRtpTransceiver));\n    }\n    CHK_LOG_ERR(retStatus);\n    LEAVES();\n    return retStatus;\n}\n\n'''
+          s = s[:start] + new + s[end:]
+
+          start = s.index('STATUS sendPacketToRtpReceiver(')
+          end = s.index('STATUS changePeerConnectionState(', start)
+          new = '''STATUS sendPacketToRtpReceiver(PKvsPeerConnection pKvsPeerConnection, PBYTE pBuffer, UINT32 bufferLen)\n{\n    UNUSED_PARAM(pKvsPeerConnection);\n    UNUSED_PARAM(pBuffer);\n    UNUSED_PARAM(bufferLen);\n    /* This endpoint only sends RTP media. Incoming RTP media is intentionally ignored. */\n    return STATUS_SUCCESS;\n}\n\n'''
+          s = s[:start] + new + s[end:]
+          s = re.sub(r'(?ms)^STATUS onFrameReadyFunc\(.*?^\}\n\n', '', s, count=1)
+          s = re.sub(r'(?ms)^STATUS onFrameDroppedFunc\(.*?^\}\n\n', '', s, count=1)
+          pc.write_text(s)
+
+          h = pathlib.Path('src/source/PeerConnection/Rtp.h')
+          s = h.read_text()
+          s = re.sub(r'\n    UINT32 jitterBufferSsrc;\n    PJitterBuffer pJitterBuffer;\n', '', s, count=1)
+          s = re.sub(r'\n    UINT64 onFrameCustomData;\n    RtcOnFrame onFrame;\n', '', s, count=1)
+          s = re.sub(r'\n    PBYTE peerFrameBuffer;\n    UINT32 peerFrameBufferSize;\n', '', s, count=1)
+          s = re.sub(r'\n    RtcInboundRtpStreamStats inboundStats;', '', s, count=1)
+          s = re.sub(r'\nSTATUS kvsRtpTransceiverSetJitterBuffer\(PKvsRtpTransceiver, PJitterBuffer\);\n', '', s, count=1)
+          s = s.replace('STATUS createKvsRtpTransceiver(RTC_RTP_TRANSCEIVER_DIRECTION, PKvsPeerConnection, UINT32, UINT32, PRtcMediaStreamTrack, PJitterBuffer, RTC_CODEC,\n',
+                        'STATUS createKvsRtpTransceiver(RTC_RTP_TRANSCEIVER_DIRECTION, PKvsPeerConnection, UINT32, UINT32, PRtcMediaStreamTrack, RTC_CODEC,\n')
+          h.write_text(s)
+
+          # Remove the now-unused jitter buffer implementation from the build.
+          cm = pathlib.Path('CMakeLists.txt')
+          if cm.exists():
+              s = cm.read_text()
+              s = s.replace('    src/source/PeerConnection/JitterBuffer.c\n', '')
+              cm.write_text(s)
+
+          # Remove the old jitter buffer source/header after all references are gone.
+          pathlib.Path('src/source/PeerConnection/JitterBuffer.c').unlink(missing_ok=True)
+          pathlib.Path('src/source/PeerConnection/JitterBuffer.h').unlink(missing_ok=True)
+
+          # Make the include umbrella stop exposing the deleted receiver implementation.
+          inc = pathlib.Path('src/source/Include_i.h')
+          s = inc.read_text()
+          s = s.replace('#include "PeerConnection/JitterBuffer.h"\n', '')
+          inc.write_text(s)
+
+          # Remove temporary workflow after this job commits the real changes.
+          pathlib.Path('.github/workflows/minimal-publisher-cleanup.yml').unlink()
+
+      - name: Verify no jitter-buffer references remain in the core
+        run: |
+          ! grep -RInE 'JitterBuffer|pJitterBuffer|jitterBufferSsrc|onFrameReadyFunc|onFrameDroppedFunc' src/source/PeerConnection src/source/Include_i.h
+
+      - name: Commit changes
+        run: |
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add -A
+          git diff --cached --check
+          git commit -m 'Strip inbound RTP media and jitter buffer'
+          git push origin HEAD:minimal-publisher

@@ -35,17 +35,6 @@ extern "C" {
 #include <openssl/sha.h>
 #include <openssl/ssl.h>
 #elif KVS_USE_MBEDTLS
-/* mbedTLS 4 moved legacy entropy/CTR-DRBG/hash/RSA/ECP/bignum headers under
- * mbedtls/private/ and gates their prototypes behind
- * MBEDTLS_DECLARE_PRIVATE_IDENTIFIERS. The symbols still ship in libmbedcrypto,
- * so we declare the macro before mbedtls/ssl.h to re-expose them across all
- * includes below. Note: the mbedtls/private/ headers are explicitly unsupported upstream
- * and may break across v4.x point releases. TODO: migrate to PSA Crypto APIs
- * (psa_crypto_init + psa_generate_random + psa_hash_compute + psa_mac_compute)
- * in a follow-up so we can drop this opt-out. */
-/* Nested guard: a bare __has_include(...) in an #if is a syntax error on
- * pre-C23 / older compilers (e.g. GCC < 5) — the && does not stop the parse.
- * #ifdef __has_include is safe everywhere; only use the operator when present. */
 #ifdef __has_include
 #if __has_include(<mbedtls/build_info.h>)
 #include <mbedtls/build_info.h>
@@ -88,7 +77,6 @@ extern "C" {
 #endif
 
 // INET/INET6 MUST be defined before usrsctp
-// If removed will cause corruption that is hard to determine at runtime
 #define INET  1
 #define INET6 1
 #include <usrsctp.h>
@@ -99,7 +87,6 @@ extern "C" {
 #ifdef HAVE_IFADDRS_H
 #include <ifaddrs.h>
 #endif
-#include <sys/types.h>
 #include <sys/socket.h>
 #include <netdb.h>
 #include <net/if.h>
@@ -111,44 +98,30 @@ extern "C" {
 #endif
 #endif
 
-// Max uFrag and uPwd length as documented in https://tools.ietf.org/html/rfc5245#section-15.4
 #define ICE_MAX_UFRAG_LEN 256
 #define ICE_MAX_UPWD_LEN  256
-
-// Max stun username attribute len: https://tools.ietf.org/html/rfc5389#section-15.3
 #define STUN_MAX_USERNAME_LEN (UINT16) 512
-
-// https://tools.ietf.org/html/rfc5389#section-15.7
 #define STUN_MAX_REALM_LEN (UINT16) 128
-
-// https://tools.ietf.org/html/rfc5389#section-15.8
 #define STUN_MAX_NONCE_LEN (UINT16) 128
-
-// https://tools.ietf.org/html/rfc5389#section-15.6
 #define STUN_MAX_ERROR_PHRASE_LEN (UINT16) 128
-
-// Byte sizes of the IP addresses
 #define IPV6_ADDRESS_LENGTH (UINT16) 16
 #define IPV4_ADDRESS_LENGTH (UINT16) 4
-
 #define CERTIFICATE_FINGERPRINT_LENGTH 160
-
 #define MAX_UDP_PACKET_SIZE 65507
 
 typedef enum {
-    KVS_IP_FAMILY_TYPE_NOT_SET = (UINT16) 0x0000, // Sentinel value for not yet set IP address.
+    KVS_IP_FAMILY_TYPE_NOT_SET = (UINT16) 0x0000,
     KVS_IP_FAMILY_TYPE_IPV4 = (UINT16) 0x0001,
     KVS_IP_FAMILY_TYPE_IPV6 = (UINT16) 0x0002,
 } KVS_IP_FAMILY_TYPE;
 
 typedef struct {
     UINT16 family;
-    UINT16 port;                       // port is stored in network byte order
-    BYTE address[IPV6_ADDRESS_LENGTH]; // address is stored in network byte order
+    UINT16 port;
+    BYTE address[IPV6_ADDRESS_LENGTH];
     BOOL isPointToPoint;
 } KvsIpAddress, *PKvsIpAddress;
 
-// This structure stores both an IPv4 and IPv6 address (if applicable).
 typedef struct {
     KvsIpAddress ipv4Address;
     KvsIpAddress ipv6Address;
@@ -164,7 +137,6 @@ static inline BOOL IS_IPV6_ADDR(const PKvsIpAddress pAddress)
     return pAddress != NULL && pAddress->family == KVS_IP_FAMILY_TYPE_IPV6;
 }
 
-// Used for ensuring alignment
 #define ALIGN_UP_TO_MACHINE_WORD(x) ROUND_UP((x), SIZEOF(SIZE_T))
 
 typedef STATUS (*IceServerSetIpFunc)(UINT64, PCHAR, PDualKvsIpAddresses);
@@ -173,9 +145,7 @@ STATUS getIpAddrStr(PKvsIpAddress pKvsIpAddress, PCHAR pBuffer, UINT32 bufferLen
 ////////////////////////////////////////////////////
 // Project forward declarations
 ////////////////////////////////////////////////////
-struct __TurnConnection;
 struct __SocketConnection;
-STATUS generateJSONSafeString(PCHAR, UINT32);
 
 ////////////////////////////////////////////////////
 // Project internal includes
@@ -192,17 +162,9 @@ STATUS generateJSONSafeString(PCHAR, UINT32);
 #include "Ice/IceUtils.h"
 #include "Sdp/Sdp.h"
 #include "Ice/IceAgent.h"
-#include "Ice/TurnConnection.h"
 #include "Ice/IceAgentStateMachine.h"
-#include "Ice/TurnConnectionStateMachine.h"
-#include "Ice/NatBehaviorDiscovery.h"
 #include "Srtp/SrtpSession.h"
 #include "Sctp/Sctp.h"
-#include "Signaling/FileCache.h"
-#include "Signaling/Signaling.h"
-#include "Signaling/ChannelInfo.h"
-#include "Signaling/StateMachine.h"
-#include "Signaling/LwsApiCalls.h"
 #include "Rtp/RtpPacket.h"
 #include "Rtcp/RtcpPacket.h"
 #include "Rtcp/RollingBuffer.h"
@@ -214,20 +176,9 @@ STATUS generateJSONSafeString(PCHAR, UINT32);
 #include "PeerConnection/Rtp.h"
 #include "PeerConnection/Rtcp.h"
 #include "PeerConnection/DataChannel.h"
-#include "Rtp/Codecs/RtpVP8Payloader.h"
 #include "Rtp/Codecs/RtpH264Payloader.h"
-#include "Rtp/Codecs/RtpH265Payloader.h"
 #include "Rtp/Codecs/RtpOpusPayloader.h"
-#include "Rtp/Codecs/RtpG711Payloader.h"
 #include "Metrics/Metrics.h"
-
-////////////////////////////////////////////////////
-// Project internal defines
-////////////////////////////////////////////////////
-
-////////////////////////////////////////////////////
-// Project internal functions
-////////////////////////////////////////////////////
 
 #define KVS_CONVERT_TIMESCALE(pts, from_timescale, to_timescale) (pts * to_timescale / from_timescale)
 

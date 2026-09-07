@@ -1,5 +1,10 @@
 cmake_minimum_required(VERSION 3.20)
-project(tiny_webrtc LANGUAGES CXX)
+
+if(APPLE)
+    project(tiny_webrtc LANGUAGES CXX OBJCXX)
+else()
+    project(tiny_webrtc LANGUAGES CXX)
+endif()
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -20,25 +25,21 @@ add_library(tiny_webrtc STATIC
 )
 
 target_include_directories(tiny_webrtc PUBLIC include)
-
 target_compile_features(tiny_webrtc PUBLIC cxx_std_20)
 
-if (MSVC)
+if(MSVC)
     target_compile_options(tiny_webrtc PRIVATE /O2 /EHs-c- /GR-)
 else()
     target_compile_options(tiny_webrtc PRIVATE -Os -fno-exceptions -fno-rtti -ffunction-sections -fdata-sections)
 endif()
 
-if (APPLE)
+if(APPLE)
     target_sources(tiny_webrtc PRIVATE
         src/platform/macos/NetworkWebSocket.mm
         src/platform/macos/NetworkDtls.mm
     )
-    target_link_libraries(tiny_webrtc PRIVATE
-        "-framework Network"
-        "-framework Security"
-    )
-elseif (WIN32)
+    target_link_libraries(tiny_webrtc PRIVATE "-framework Network" "-framework Security")
+elseif(WIN32)
     target_sources(tiny_webrtc PRIVATE
         src/platform/windows/NativeWebSocket.cpp
         src/platform/windows/SchannelDtls.cpp
@@ -51,9 +52,9 @@ else()
     )
 endif()
 
-if (WIN32)
+if(WIN32)
     target_compile_definitions(tiny_webrtc PRIVATE TINYRTC_WINDOWS=1)
-elseif (APPLE)
+elseif(APPLE)
     target_compile_definitions(tiny_webrtc PRIVATE TINYRTC_MACOS=1)
 else()
     target_compile_definitions(tiny_webrtc PRIVATE TINYRTC_LINUX=1)

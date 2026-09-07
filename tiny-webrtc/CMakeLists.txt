@@ -22,9 +22,7 @@ add_library(tiny_webrtc STATIC
 )
 
 target_include_directories(tiny_webrtc PUBLIC include)
-
 target_compile_features(tiny_webrtc PUBLIC cxx_std_20)
-
 target_compile_definitions(tiny_webrtc PRIVATE
     $<$<PLATFORM_ID:Linux>:TINYRTC_LINUX=1>
     $<$<PLATFORM_ID:Windows>:TINYRTC_WINDOWS=1>
@@ -57,13 +55,21 @@ elseif (APPLE)
         "-framework Network"
         "-framework Security"
     )
-else()
+elseif (UNIX)
     target_sources(tiny_webrtc PRIVATE
+        src/crypto/LinuxKernelCrypto.cpp
         src/platform/linux/TinyWebSocket.cpp
         src/platform/linux/TinyDtls.cpp
     )
-endif()
-
-if (UNIX AND NOT APPLE)
+    target_include_directories(tiny_webrtc PUBLIC
+        ${CMAKE_CURRENT_SOURCE_DIR}/kernel-crypto/include)
     target_link_libraries(tiny_webrtc PRIVATE pthread)
+
+    find_program(KERNEL_MAKE make)
+    if (KERNEL_MAKE)
+        add_custom_target(tinycrypto_module
+            COMMAND ${KERNEL_MAKE} -C ${CMAKE_CURRENT_SOURCE_DIR}/kernel-crypto
+            WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/kernel-crypto
+            COMMENT "Building tinycrypto Linux kernel module")
+    endif()
 endif()

@@ -14,6 +14,9 @@
 MODULE_LICENSE("GPL");
 MODULE_DESCRIPTION("Tiny WebRTC kernel crypto provider");
 
+#define TINYCRYPTO_MAX_INPUT (1U << 20)
+#define TINYCRYPTO_MAX_AAD   (1U << 16)
+
 static struct crypto_shash *sha1_tfm;
 static struct crypto_shash *sha256_tfm;
 static struct crypto_shash *hmac_sha1_tfm;
@@ -21,14 +24,13 @@ static struct crypto_shash *hmac_sha256_tfm;
 static struct crypto_aead *gcm_tfm;
 static DEFINE_MUTEX(crypto_lock);
 
-static int tiny_hash(struct crypto_shash *tfm, const void __user *input, u32 input_len,
-                     void *output, u32 out_len)
+static int tiny_hash(struct crypto_shash *tfm, const void __user *input, u32 input_len, void *output)
 {
     struct shash_desc *desc;
-    u8 *buf = NULL;
+    u8 *buf;
     int ret;
 
-    if (!tfm || input_len > (1U << 20) || out_len > SHASH_DESC_ON_STACK_LEN)
+    if (!tfm || input_len > TINYCRYPTO_MAX_INPUT)
         return -EINVAL;
 
     buf = memdup_user(input, input_len);
@@ -40,10 +42,11 @@ static int tiny_hash(struct crypto_shash *tfm, const void __user *input, u32 inp
         kfree(buf);
         return -ENOMEM;
     }
+
     desc->tfm = tfm;
     desc->flags = 0;
-
     ret = crypto_shash_digest(desc, buf, input_len, output);
+
     kfree(desc);
     kfree(buf);
     return ret;
@@ -53,10 +56,10 @@ static int tiny_hmac(struct crypto_shash *tfm, const void __user *key, u32 key_l
                      const void __user *input, u32 input_len, void *output)
 {
     struct shash_desc *desc;
-    u8 *key_buf = NULL, *input_buf = NULL;
+    u8 *key_buf, *input_buf;
     int ret;
 
-    if (!tfm || key_len > TINYCRYPTO_MAX_KEY_SIZE || input_len > (1U << 20))
+    if (!tfm || key_len > TINYCRYPTO_MAX_KEY_SIZE || input_len > TINYCRYPTO_MAX_INPUT)
         return -EINVAL;
 
     key_buf = memdup_user(key, key_len);
@@ -75,6 +78,7 @@ static int tiny_hmac(struct crypto_shash *tfm, const void __user *key, u32 key_l
         kfree(key_buf);
         return -ENOMEM;
     }
+
     desc->tfm = tfm;
     desc->flags = 0;
 
@@ -94,21 +98,20 @@ static int tiny_gcm(struct tinycrypto_gcm_req *req, bool decrypt)
     struct scatterlist sg;
     u8 *buf = NULL, *aad = NULL;
     u32 crypt_len;
+    u32 total_len;
     int ret;
 
     if (req->key_len != 16 && req->key_len != 24 && req->key_len != 32)
         return -EINVAL;
-    if (req->data_len > (1U << 20) || req->aad_len > (1U << 16))
+    if (req->data_len > TINYCRYPTO_MAX_INPUT || req->aad_len > TINYCRYPTO_MAX_AAD)
         return -EINVAL;
 
-    buf = kmalloc(req->data_len + TINYCRYPTO_GCM_TAG_SIZE, GFP_KERNEL);
+    crypt_len = req->data_len + (decrypt ? TINYCRYPTO_GCM_TAG_SIZE : 0);
+    total_len = req->aad_len + crypt_len;
+
+    buf = kzalloc(total_len, GFP_KERNEL);
     if (!buf)
         return -ENOMEM;
-
-    if (copy_from_user(buf, u64_to_user_ptr(req->data), req->data_len)) {
-        ret = -EFAULT;
-        goto out;
-    }
 
     if (req->aad_len) {
         aad = memdup_user(u64_to_user_ptr(req->aad), req->aad_len);
@@ -117,7 +120,16 @@ static int tiny_gcm(struct tinycrypto_gcm_req *req, bool decrypt)
             aad = NULL;
             goto out;
         }
+        memcpy(buf, aad, req->aad_len);
     }
+
+    if (copy_from_user(buf + req->aad_len, u64_to_user_ptr(req->data), req->data_len)) {
+        ret = -EFAULT;
+        goto out;
+    }
+
+    if (decrypt)
+        memcpy(buf + req->aad_len + req->data_len, req->tag, TINYCRYPTO_GCM_TAG_SIZE);
 
     ret = crypto_aead_setkey(gcm_tfm, req->key, req->key_len);
     if (ret)
@@ -133,41 +145,23 @@ static int tiny_gcm(struct tinycrypto_gcm_req *req, bool decrypt)
         goto out;
     }
 
-    crypt_len = req->data_len + (decrypt ? TINYCRYPTO_GCM_TAG_SIZE : 0);
-    sg_init_one(&sg, buf, crypt_len);
+    sg_init_one(&sg, buf, total_len);
     aead_request_set_callback(areq, CRYPTO_TFM_REQ_MAY_SLEEP, NULL, NULL);
-    aead_request_set_crypt(areq, &sg, &sg, decrypt ? crypt_len : req->data_len,
-                           req->iv);
+    aead_request_set_crypt(areq, &sg, &sg, crypt_len, req->iv);
     aead_request_set_ad(areq, req->aad_len);
 
-    /* The current kernel AEAD API expects associated data in the beginning of the
-     * scatterlist.  Build a contiguous [AAD | ciphertext/plaintext] buffer when
-     * AAD is present. */
-    if (req->aad_len) {
-        u8 *combined = kmalloc(req->aad_len + crypt_len, GFP_KERNEL);
-        if (!combined) {
-            ret = -ENOMEM;
-            goto out;
-        }
-        memcpy(combined, aad, req->aad_len);
-        memcpy(combined + req->aad_len, buf, crypt_len);
-        kfree(buf);
-        buf = combined;
-        sg_init_one(&sg, buf, req->aad_len + crypt_len);
-        aead_request_set_crypt(areq, &sg, &sg, decrypt ? crypt_len : req->data_len,
-                               req->iv);
-        aead_request_set_ad(areq, req->aad_len);
+    ret = decrypt ? crypto_aead_decrypt(areq) : crypto_aead_encrypt(areq);
+    if (ret)
+        goto out;
+
+    if (copy_to_user(u64_to_user_ptr(req->data), buf + req->aad_len,
+                     decrypt ? req->data_len : req->data_len)) {
+        ret = -EFAULT;
+        goto out;
     }
 
-    ret = decrypt ? crypto_aead_decrypt(areq) : crypto_aead_encrypt(areq);
-    if (!ret) {
-        u32 output_len = decrypt ? req->data_len - TINYCRYPTO_GCM_TAG_SIZE : req->data_len;
-        u8 *output = buf + req->aad_len;
-        if (copy_to_user(u64_to_user_ptr(req->data), output, output_len))
-            ret = -EFAULT;
-        if (!ret && !decrypt)
-            memcpy(req->tag, output + req->data_len, TINYCRYPTO_GCM_TAG_SIZE);
-    }
+    if (!decrypt)
+        memcpy(req->tag, buf + req->aad_len + req->data_len, TINYCRYPTO_GCM_TAG_SIZE);
 
 out:
     aead_request_free(areq);
@@ -179,50 +173,53 @@ out:
 static long tinycrypto_ioctl(struct file *file, unsigned int cmd, unsigned long arg)
 {
     int ret = 0;
+
     mutex_lock(&crypto_lock);
 
     switch (cmd) {
     case TINYCRYPTO_SHA1: {
-        struct tinycrypto_hash_req req;
-        if (copy_from_user(&req, (void __user *)arg, sizeof(req))) { ret = -EFAULT; break; }
-        ret = tiny_hash(sha1_tfm, u64_to_user_ptr(req.input), req.input_len, req.output, TINYCRYPTO_SHA1_SIZE);
-        if (!ret && copy_to_user((void __user *)arg, &req, sizeof(req))) ret = -EFAULT;
+        struct tinycrypto_hash_req req = {};
+        if (copy_from_user(&req, (void __user *) arg, sizeof(req))) { ret = -EFAULT; break; }
+        ret = tiny_hash(sha1_tfm, u64_to_user_ptr(req.input), req.input_len, req.output);
+        if (!ret && copy_to_user((void __user *) arg, &req, sizeof(req))) ret = -EFAULT;
         break;
     }
     case TINYCRYPTO_SHA256: {
-        struct tinycrypto_hash_req req;
-        if (copy_from_user(&req, (void __user *)arg, sizeof(req))) { ret = -EFAULT; break; }
-        ret = tiny_hash(sha256_tfm, u64_to_user_ptr(req.input), req.input_len, req.output, TINYCRYPTO_SHA256_SIZE);
-        if (!ret && copy_to_user((void __user *)arg, &req, sizeof(req))) ret = -EFAULT;
+        struct tinycrypto_hash_req req = {};
+        if (copy_from_user(&req, (void __user *) arg, sizeof(req))) { ret = -EFAULT; break; }
+        ret = tiny_hash(sha256_tfm, u64_to_user_ptr(req.input), req.input_len, req.output);
+        if (!ret && copy_to_user((void __user *) arg, &req, sizeof(req))) ret = -EFAULT;
         break;
     }
     case TINYCRYPTO_HMAC_SHA1: {
-        struct tinycrypto_hmac_req req;
-        if (copy_from_user(&req, (void __user *)arg, sizeof(req))) { ret = -EFAULT; break; }
-        ret = tiny_hmac(hmac_sha1_tfm, u64_to_user_ptr(req.key), req.key_len, u64_to_user_ptr(req.input), req.input_len, req.output);
-        if (!ret && copy_to_user((void __user *)arg, &req, sizeof(req))) ret = -EFAULT;
+        struct tinycrypto_hmac_req req = {};
+        if (copy_from_user(&req, (void __user *) arg, sizeof(req))) { ret = -EFAULT; break; }
+        ret = tiny_hmac(hmac_sha1_tfm, u64_to_user_ptr(req.key), req.key_len,
+                        u64_to_user_ptr(req.input), req.input_len, req.output);
+        if (!ret && copy_to_user((void __user *) arg, &req, sizeof(req))) ret = -EFAULT;
         break;
     }
     case TINYCRYPTO_HMAC_SHA256: {
-        struct tinycrypto_hmac_req req;
-        if (copy_from_user(&req, (void __user *)arg, sizeof(req))) { ret = -EFAULT; break; }
-        ret = tiny_hmac(hmac_sha256_tfm, u64_to_user_ptr(req.key), req.key_len, u64_to_user_ptr(req.input), req.input_len, req.output);
-        if (!ret && copy_to_user((void __user *)arg, &req, sizeof(req))) ret = -EFAULT;
+        struct tinycrypto_hmac_req req = {};
+        if (copy_from_user(&req, (void __user *) arg, sizeof(req))) { ret = -EFAULT; break; }
+        ret = tiny_hmac(hmac_sha256_tfm, u64_to_user_ptr(req.key), req.key_len,
+                        u64_to_user_ptr(req.input), req.input_len, req.output);
+        if (!ret && copy_to_user((void __user *) arg, &req, sizeof(req))) ret = -EFAULT;
         break;
     }
     case TINYCRYPTO_AES_GCM_ENC:
     case TINYCRYPTO_AES_GCM_DEC: {
-        struct tinycrypto_gcm_req req;
-        if (copy_from_user(&req, (void __user *)arg, sizeof(req))) { ret = -EFAULT; break; }
+        struct tinycrypto_gcm_req req = {};
+        if (copy_from_user(&req, (void __user *) arg, sizeof(req))) { ret = -EFAULT; break; }
         ret = tiny_gcm(&req, cmd == TINYCRYPTO_AES_GCM_DEC);
-        if (!ret && copy_to_user((void __user *)arg, &req, sizeof(req))) ret = -EFAULT;
+        if (!ret && copy_to_user((void __user *) arg, &req, sizeof(req))) ret = -EFAULT;
         break;
     }
     case TINYCRYPTO_RANDOM: {
-        struct tinycrypto_random_req req;
+        struct tinycrypto_random_req req = {};
         u8 *buf;
-        if (copy_from_user(&req, (void __user *)arg, sizeof(req))) { ret = -EFAULT; break; }
-        if (!req.output_len || req.output_len > (1U << 20)) { ret = -EINVAL; break; }
+        if (copy_from_user(&req, (void __user *) arg, sizeof(req))) { ret = -EFAULT; break; }
+        if (!req.output_len || req.output_len > TINYCRYPTO_MAX_INPUT) { ret = -EINVAL; break; }
         buf = kmalloc(req.output_len, GFP_KERNEL);
         if (!buf) { ret = -ENOMEM; break; }
         get_random_bytes(buf, req.output_len);
